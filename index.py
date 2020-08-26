@@ -1,19 +1,20 @@
 from discord.ext import commands
 from discord.ext.commands import MissingRequiredArgument, MissingAnyRole, CommandOnCooldown
+import discord
 import requests
 import incomecalcforbot
 import json
 from bs4 import BeautifulSoup
 
-aaid = '5049'
-bankaaid = '5049'  # Offshore id, replace with alliance ID if you want both the cash sent and taxes to be calculated out of the main alliance.
-rssname = ['money', 'food', 'coal', 'oil', 'uranium', 'bauxite', 'iron', 'lead', 'gasoline', 'munitions', 'aluminum','steel']
-email = 'bswindellnwt08@gmail.com'
-password = 'justiceman57'
-apikey = 'a00d3f1cd6f1ad'
-token = 'NzM1MjU3Mzc3NjA3MjU0MTE3.Xxdnyw.yCKnVzcCHxY_vS5GMelz2ElqSXs'
+aaid = ''
+bankaaid = ''  # Offshore id, replace with alliance ID if you want both the cash sent and taxes to be calculated out of the main alliance.
+email = ''
+password = ''
+apikey = ''
+token = ''
 login_data = {"email": email, "password": password, "loginform": "Login"}
 session = requests.Session()
+rssname = ['money', 'food', 'coal', 'oil', 'uranium', 'bauxite', 'iron', 'lead', 'gasoline', 'munitions', 'aluminum','steel']
 
 def sendrss(session, email, password, aaid, rsstosend, nation):
     moneydat = {"withrecipient":nation,'withtype':"Nation","withsubmit":"Withdraw", 'withnote':'aid'}
@@ -36,6 +37,7 @@ def sendrss(session, email, password, aaid, rsstosend, nation):
     success = soup_data.find_all(id="withdrawal-result") #finds the data to show if successful or if any errors occurred
     print(success) #prints results to console
     
+    
 client = commands.Bot(command_prefix='t!')
 
 @client.event
@@ -44,6 +46,240 @@ async def on_ready():
 
 @client.command(name='banktransfer', help='example: t!banktransfer The+Syndicate 1 money, 2 food')
 @commands.has_any_role('Pentarch', 'Elder', 'Suffet')
+async def banktransfer(ctx, alliance, *, resources):
+    if ctx.channel.name == 'oversight-nagging':
+        rsstosend = {}
+        aa = ''
+        allgood = True
+        parts = (alliance.split('+'))
+        for i in parts: #turns 'The+Pirate+Syndicate' into 'The Pirate Syndicate'
+            aa = aa + i + ' '
+        rssparts = (resources.split(', '))
+        for i in rssparts: #turns '1 money, 2 food' into rsstosend{'money': '1', 'food': '2'}
+            splitrss = i.split()
+            rsstosend.update({splitrss[1]:splitrss[0]})
+        test = 0
+        for k,v in rsstosend.items():
+            if k in rssname:
+                test += 1
+            else:
+                test = 0
+        if len(rsstosend) != test:
+            allgood = False
+        if not allgood:
+            msg = 'You entered an invalid resource'
+            await ctx.send(msg)
+        if allgood:  
+            session.post("https://politicsandwar.com/login/", data={"email": email, "password": password, "loginform": "Login"}, timeout=300)
+            moneydat = {"withrecipient":aa,'withtype':"Alliance","withsubmit":"Withdraw"}
+            for rss,amount in rsstosend.items():
+                moneydat[f'with{rss}'] =amount
+            result =  session.post(f"https://politicsandwar.com/alliance/id={bankaaid}&display=bank", data=moneydat, timeout=300)
+            soup_data = BeautifulSoup(result.text, 'html.parser')
+            success = soup_data.find_all(id="withdrawal-result")
+            print(success)
+            bnktrnsfr_embed = discord.Embed(
+            title = 'Bank Transfer',
+            description = 'You have sent resources to ' + aa,
+            colour = discord.Colour.orange()
+            )
+            for rss,amount in rsstosend.items():
+                bnktrnsfr_embed.add_field(name=rss, value=abs(round(amount)), inline=True)
+        await ctx.send(embed=bnktrnsfr_embed)
+
+
+@client.command(name='taxupkeep', help='example: t!taxupkeep 908 3')
+@commands.has_any_role('Pentarch', 'Elder', 'Suffet')
+async def taxupkeep(ctx, taxid, days):
+    if ctx.channel.name == 'oversight-nagging':
+        await ctx.send("This might take a few minutes")
+        rss = incomecalcforbot.gettaxbracketupkeep(taxid,aaid)
+        alliancemem = json.loads(requests.get(f"https://politicsandwar.com/api/alliance-members/?allianceid={aaid}&key={apikey}").text)['nations'] #gets aa member data
+        aacolor = json.loads(requests.get(f"https://politicsandwar.com/api//alliance/id={aaid}&key={apikey}").text)['color'] #gets aa's color
+        nationinfo = {}
+        rssinfo = {}
+        for i in alliancemem:
+            nationinfo[i['nation']] = i #makes nationinfo contain the info in alliancemem, but better format
+        for k,v in rss.items():
+            rssinfo[k] = v #sets rssinfo equal to rss, fixing some issues
+        totalrss = {}
+        for nation in rssinfo:
+            if nationinfo[nation]['color'] != aacolor or nationinfo[nation]['minutessinceactive'] > 4320:
+                del rss[nation] #deletes any inactive nations and nations not on aa color
+        for i in rssname:
+            totalrss[i] = 0 #adds every rss name to totalrss and sets their value to 0
+        for nat in rss:
+            for rs, v in rss[nat].items():
+                if rss[nat][rs] > 0:
+                    rss[nat][rs] = 0
+                if abs(rss[nat][rs]) * int(days) - float(nationinfo[nat][rs]) > 0: #makes sure rss only contains what is needed to sustain the nation for specified days
+                        rss[nat][rs] = abs(rss[nat][rs]) * int(days) - float(nationinfo[nat][rs])
+                else:
+                    rss[nat][rs] = 0 
+        upkeep_embed = discord.Embed(
+            title = 'Total upkeep',
+            description = 'Upkeep for tax bracket: ' + taxid,
+            colour = discord.Colour.orange()
+            )
+        for nat in rss:
+            for name,value in rss[nat].items():
+                totalrss[name]+= value #adds the value to send and multiplies by number of days specified
+        for name,rs in totalrss.items():
+            upkeep_embed.add_field(name=name, value=abs(round(rs)), inline=True)
+        await ctx.send(embed=upkeep_embed) #sends msg to discord
+      
+@client.command(name='sendtaxupkeep', help='example: t!sendtaxupkeep 1275 3')
+@commands.has_any_role('Pentarch', 'Elder', 'Suffet')
+async def sendtaxupkeep(ctx, taxid, days):
+    if ctx.channel.name == 'oversight-nagging':
+        await ctx.send("This may take a few minutes")
+        rss = incomecalcforbot.gettaxbracketupkeep(taxid,aaid) #calculates the rss to send to the specified tax bracket
+        totalrss = {}
+        for i in rssname:
+            totalrss[i] = 0 #adds every rss name to totalrss and sets their value to 0
+        for nat in rss:
+            for name,value in rss[nat].items():
+                if value<0:
+                    totalrss[name]-= value #adds the value to send to totalrss
+        bank = requests.get(f"https://politicsandwar.com/api/alliance-bank/?allianceid={bankaaid}&key={apikey}").json()['alliance_bank_contents'][0] #gets aa bank info
+        alliancemem = json.loads(requests.get(f"https://politicsandwar.com/api/alliance-members/?allianceid={aaid}&key={apikey}").text)['nations'] #gets info on aa members
+        aacolor = json.loads(requests.get(f"https://politicsandwar.com/api//alliance/id={aaid}&key={apikey}").text)['color'] #gets aa color
+        nationrss = {}
+        for i in alliancemem:
+            nationrss[i['nation']] = i #makes nationinfo contain the info in alliancemem, but better format
+        allgood = True
+        for name,rs in totalrss.items():
+            rs = rs*int(days)
+            if rs<0:
+                if bank[name]<rs: #checks if aa bank has enough to send
+                    allgood = False
+        if not allgood:
+            msg = 'Your bank doesnt have enough resources to send that'
+        else:
+            rsstosend = {}
+            for nat,rs in rss.items():
+                if nationrss[nat]['color'] != aacolor or nationrss[nat]['minutessinceactive'] > 4320:
+                    break #prevents inactive nations and nations not on aa color from being added
+                rsstosend[nat] = {}
+                for rssnamee,resource in rs.items():
+                    rsstosend[nat][rssnamee] = 0
+                    if resource<0:
+                        rsstosend[nat][rssnamee] -= resource #adds any rss needing to be sent to rsstosend
+            for nat in rsstosend:
+                for rss in rsstosend[nat]:
+                    if nationrss[nat][rss] == -1: #checks if nation doesn't share bank info with aa, and if so gives them nothing
+                        rsstosend[nat][rss] = 0
+                    if rsstosend[nat][rss] * int(days) - float(nationrss[nat][rss]) > 0: #makes sure rsstosend only contains what is needed to sustain the nation for specified days
+                        rsstosend[nat][rss] = rsstosend[nat][rss] * int(days) - float(nationrss[nat][rss])
+                    else:
+                        rsstosend[nat][rss] = 0
+            nat = []
+            filtr_list = []
+            filtr = 0
+            for nation,rs in rsstosend.items():
+                m = ''
+                for i in rs:
+                    if bank[i] < rs[i]: #makes sure, again, that bank has enough rss to send
+                        rs[i] = 0 #if not enough, sets to 0, preventing errors later
+                        m = ' Some resources will not be sent.'
+                        await ctx.send(m)
+                    if rs[i] > 0: #checks if rss greater than 0, if true stops this iteration
+                        break
+                    else:
+                        filtr+= 1 #filter that adds up the rss names to send
+                    if filtr == len(rs): #checks if rsstosend will send all 0s to nation
+                        filtr_list.append(nation)#if true, adds to list
+                filtr = 0 #resets filter
+            for i in filtr_list:
+                del rsstosend[i] #deletes nations that would be sent 0 resources in rsstosend
+            if rsstosend:
+                for nation in rsstosend:
+                    sendrss(session, email, password, aaid, rsstosend, nation) #sends the rss to each nation, in turn
+                msg = f'You have sent {days} days of resources to nations in tax bracket with id {taxid}.' + m
+            else:
+                msg = f'Nobody in tax bracket {taxid} needed resources within {days} days.'
+        await ctx.send(msg)
+
+@client.command(name='upkeep', help='example: t!upkeep 196366')
+@commands.has_any_role('Pentarch', 'Elder', 'Suffet')
+async def upkeep(ctx, natid):
+    if ctx.channel.name == 'oversight-nagging':
+        await ctx.send("This may take a second")
+        rss = incomecalcforbot.getsinglenationupkeep(natid)
+        nation_embed = discord.Embed(
+            title = 'Total upkeep',
+            description = 'Upkeep for ' + natid,
+            colour = discord.Colour.orange()
+            )
+        for name,rs in rss.items():
+            if rs >0:
+                rs = 0
+            nation_embed.add_field(name=name, value=abs(round(rs)), inline=True)
+                                  
+        await ctx.send(embed=nation_embed)
+
+@client.command(name='send', help='example: t!send Minoatia 1 money, 2 steel')
+@commands.has_any_role('Pentarch', 'Elder', 'Suffet')
+async def send(ctx, nation, *, resources):
+    if ctx.channel.name == 'oversight-nagging':
+        rsstosend = {}
+        nat = ''
+        allgood = True
+        nat = nation.replace('+', ' ')
+        rssparts = (resources.split(', '))
+        for i in rssparts: #turns '1 money, 2 food' into rsstosend{'money': '1', 'food': '2'}
+            splitrss = i.split()
+            rsstosend.update({splitrss[1]:splitrss[0]})
+        test = 0
+        rsstosend = {
+            nation: rsstosend
+            }
+        for l in rsstosend:
+            for k, v in rsstosend[l].items():
+                if k in rssname:
+                    test += 1
+                elif k not in rssname:
+                    test = 0
+        if len(rsstosend) != test:
+            allgood = False
+        if not allgood:
+            msg = 'You entered an invalid resource'
+            await ctx.send(msg)
+        if allgood:
+            sendrss(session,email, password,aaid,rsstosend,nation)
+            send_embed = discord.Embed(
+            title = 'Send results',
+            description = 'Resources sent to ' + nation,
+            colour = discord.Colour.orange()
+            )
+            for nat in rsstosend:
+                for k,v in rsstosend[nat].items():
+                    send_embed.add_field(name=k, value=v, inline=True)
+        await ctx.send(embed=send_embed)
+
+@client.command(name='bank', help='example: t!bank')
+@commands.has_any_role('Pentarch', 'Elder', 'Suffet')
+async def bank(ctx):
+    if ctx.channel.name == 'oversight-nagging':
+        bank = requests.get(f"http://politicsandwar.com/api/alliance-bank/?allianceid={bankaaid}&key={apikey}").json()['alliance_bank_contents'][0]
+        bank_embed = discord.Embed(
+            title = 'Bank contents',
+            colour = discord.Colour.orange()
+            )
+        for nme,thing in bank.items():
+            if nme in rssname:
+                bank_embed.add_field(name=nme, value=thing, inline=True)
+        await ctx.send(embed=bank_embed)
+
+@client.listen('on_command_error')
+async def on_error(ctx, exc):
+    if isinstance(exc, MissingAnyRole):
+        await ctx.send('You do not have the necessary permissions to use this command')
+    elif isinstance(exc, CommandOnCooldown):
+        await ctx.send(f'That command is on cooldown. Try again in {exc.retry_after:,.2f} secs.')
+    elif isinstance(exc, MissingRequiredArgument):
+        await ctx.send('One or more required Arguments are missing')
+client.run(token)
 async def banktransfer(ctx, alliance, *, resources):
     if ctx.channel.name == 'oversight-nagging':
         rsstosend = {}
